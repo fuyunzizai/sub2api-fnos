@@ -266,7 +266,11 @@ find_compose_file() {
 build_local_image() {
     DOCKER_DIR="$(find_docker_dir)" || fail "Dockerfile not found"
     log "building image ${IMAGE_TAG} from ${DOCKER_DIR}"
-    docker build -t "${IMAGE_TAG}" "${DOCKER_DIR}" || fail "本地构建 ${IMAGE_TAG} 失败（通常是没有外网访问 DockerHub / Alpine 源，建议在飞牛 Docker 里配置镜像加速后重试）"
+    build_err_log="/tmp/sub2api-build-err.log"
+    if docker build -t "${IMAGE_TAG}" "${DOCKER_DIR}" > "${build_err_log}" 2>&1; then
+        return 0
+    fi
+    fail "本地构建 ${IMAGE_TAG} 失败，docker 报错(末尾): $(tail -n 5 "${build_err_log}" 2>/dev/null | tr '\n' ' | ')"
 }
 
 prepare_app_image() {
@@ -282,13 +286,14 @@ prepare_app_image() {
     fi
 
     if [ -n "${PREBUILT_IMAGE}" ] && [ "${PREBUILT_IMAGE}" != "__SUB2API_FNOS_IMAGE__" ]; then
+        pull_err_log="/tmp/sub2api-pull-err.log"
         for candidate in ${PREBUILT_IMAGE}; do
             log "pulling prebuilt image ${candidate}"
-            if docker pull "${candidate}" && docker tag "${candidate}" "${IMAGE_TAG}"; then
+            if docker pull "${candidate}" > "${pull_err_log}" 2>&1 && docker tag "${candidate}" "${IMAGE_TAG}"; then
                 log "prepared ${IMAGE_TAG} from ${candidate}"
                 return 0
             fi
-            log "拉取 ${candidate} 失败，尝试下一个候选镜像"
+            log "拉取 ${candidate} 失败，docker 报错: $(tail -n 3 "${pull_err_log}" 2>/dev/null | tr '\n' ' | ')"
         done
         log "所有预构建镜像都拉取失败，回退到本地构建"
     fi
