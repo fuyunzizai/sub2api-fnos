@@ -96,7 +96,13 @@ is_running() {
 }
 
 compose_cmd() {
-    docker compose -p "${APP_NAME}" -f "${COMPOSE_FILE}" "$@"
+    if docker compose version >/dev/null 2>&1; then
+        docker compose -p "${APP_NAME}" -f "${COMPOSE_FILE}" "$@"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        docker-compose -p "${APP_NAME}" -f "${COMPOSE_FILE}" "$@"
+    else
+        return 127
+    fi
 }
 
 start_app() {

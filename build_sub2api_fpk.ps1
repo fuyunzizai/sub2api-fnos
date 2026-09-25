@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.152",
+    [string]$Version = "0.2.8",
     [string]$Image = ""
 )
 

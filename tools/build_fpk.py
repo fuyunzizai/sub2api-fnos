@@ -31,6 +31,16 @@ def mode_for(name: str, is_dir: bool) -> int:
     return 0o644
 
 
+BINARY_SUFFIXES = {".png"}
+
+
+def normalize_bytes(arcname: str, data: bytes) -> bytes:
+    """Windows 检出常带 CRLF，脚本带 CR 会在 Linux 上报 bad interpreter。"""
+    if arcname.rsplit(".", 1)[-1].lower() in {s.lstrip(".") for s in BINARY_SUFFIXES}:
+        return data
+    return data.replace(b"\r\n", b"\n")
+
+
 def add_path(tar: tarfile.TarFile, source: Path, arcname: str) -> None:
     arcname = arcname.replace("\\", "/")
     info = tar.gettarinfo(str(source), arcname)
@@ -41,8 +51,10 @@ def add_path(tar: tarfile.TarFile, source: Path, arcname: str) -> None:
     info.mode = mode_for(arcname, source.is_dir())
 
     if source.is_file():
-        with source.open("rb") as handle:
-            tar.addfile(info, handle)
+        data = source.read_bytes()
+        data = normalize_bytes(arcname, data)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
     else:
         tar.addfile(info)
 
@@ -99,7 +111,7 @@ def configure_prebuilt_image(root: Path, image: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True)
-    parser.add_argument("--version", default="0.1.152")
+    parser.add_argument("--version", default="0.2.8")
     parser.add_argument("--image", default="")
     args = parser.parse_args()
 

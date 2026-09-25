@@ -3,17 +3,45 @@ set -u
 
 APP_NAME="sub2api"
 APP_SHARE="sub2api-docker"
-IMAGE_TAG="sub2api-fnos:0.1.152"
-APP_RUNTIME_VERSION="0.1.152"
-PREBUILT_IMAGE="ghcr.io/ahe1124/sub2api-fnos:0.1.152"
+IMAGE_TAG="sub2api-fnos:0.2.8"
+APP_RUNTIME_VERSION="0.2.8"
+PREBUILT_IMAGE="ghcr.nju.edu.cn/fuyunzizai/sub2api-fnos:0.2.8 ghcr.nju.edu.cn/fuyunzizai/sub2api-fnos:latest ghcr.io/fuyunzizai/sub2api-fnos:0.2.8 ghcr.io/fuyunzizai/sub2api-fnos:latest"
+
+INSTALL_LOG="${SUB2API_INSTALL_LOG:-/tmp/sub2api-install.log}"
+if : >> "${INSTALL_LOG}" 2>/dev/null; then
+    printf '\n===== %s 安装开始 =====\n' "$(date '+%F %T' 2>/dev/null || echo now)" >> "${INSTALL_LOG}" 2>/dev/null
+else
+    INSTALL_LOG=""
+fi
+
+emit() {
+    printf '%s\n' "$1"
+    [ -n "${INSTALL_LOG}" ] && printf '%s\n' "$1" >> "${INSTALL_LOG}" 2>/dev/null
+    return 0
+}
 
 log() {
-    echo "[sub2api install] $*"
+    emit "[sub2api install] $*"
 }
 
 fail() {
-    echo "[sub2api install] ERROR: $*" >&2
+    emit "[sub2api install] ERROR: $*"
+    emit "[sub2api install] 日志文件: ${INSTALL_LOG:-<不可写>}"
     exit 1
+}
+
+# 飞牛只回一句“执行脚本出错且原因未知”，把每条失败命令的行号落到日志里便于定位。
+set -E
+trap 'rc=$?; emit "[sub2api install] command failed (rc=${rc}) at line ${LINENO}: ${BASH_COMMAND}"' ERR
+
+compose_cmd() {
+    if docker compose version >/dev/null 2>&1; then
+        docker compose -p "${APP_NAME}" -f "${COMPOSE_FILE}" "$@"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        docker-compose -p "${APP_NAME}" -f "${COMPOSE_FILE}" "$@"
+    else
+        return 127
+    fi
 }
 
 gen_secret() {
@@ -111,7 +139,7 @@ download_file() {
     url="$1"
     dest="$2"
     if command -v curl >/dev/null 2>&1; then
-        curl -fL --connect-timeout 20 --retry 3 --retry-delay 2 -o "${dest}" "${url}"
+        curl -fL --connect-timeout 20 --max-time 300 --retry 3 --retry-delay 2 -o "${dest}" "${url}"
         return $?
     fi
     if command -v wget >/dev/null 2>&1; then
@@ -159,31 +187,37 @@ prepare_runtime_binary() {
 
     download_file "${base_url}/${archive}" "${tmp_dir}/${archive}" || {
         rm -rf "${tmp_dir}"
-        fail "failed to download ${archive}"
+        log "WARNING: 无法从 GitHub 下载 ${archive}，跳过。容器首次启动会用镜像内的 /app/sub2api 自动补齐运行时二进制。"
+        return 0
     }
     download_file "${base_url}/checksums.txt" "${tmp_dir}/checksums.txt" || {
         rm -rf "${tmp_dir}"
-        fail "failed to download checksums.txt"
+        log "WARNING: 无法下载 checksums.txt，跳过运行时二进制下载。"
+        return 0
     }
     (cd "${tmp_dir}" && grep "${archive}" checksums.txt | sha256sum -c -) || {
         rm -rf "${tmp_dir}"
-        fail "checksum verification failed for ${archive}"
+        log "WARNING: ${archive} 校验和不匹配，跳过运行时二进制下载。"
+        return 0
     }
     tar -xzf "${tmp_dir}/${archive}" -C "${tmp_dir}" || {
         rm -rf "${tmp_dir}"
-        fail "failed to extract ${archive}"
+        log "WARNING: 解压 ${archive} 失败，跳过运行时二进制下载。"
+        return 0
     }
     new_bin="$(find "${tmp_dir}" -type f -name sub2api | head -n 1)"
     [ -n "${new_bin}" ] || {
         rm -rf "${tmp_dir}"
-        fail "sub2api binary not found in ${archive}"
+        log "WARNING: ${archive} 内未找到 sub2api，跳过运行时二进制下载。"
+        return 0
     }
 
     chmod 0755 "${new_bin}"
-    "${new_bin}" --version >/dev/null 2>&1 || {
+    if ! "${new_bin}" --version >/dev/null 2>&1; then
         rm -rf "${tmp_dir}"
-        fail "downloaded sub2api binary is not executable"
-    }
+        log "WARNING: 下载的 sub2api 二进制无法执行，跳过。"
+        return 0
+    fi
     cp "${new_bin}" "${runtime_bin}.new"
     chmod 0755 "${runtime_bin}.new"
     mv -f "${runtime_bin}.new" "${runtime_bin}"
@@ -229,6 +263,12 @@ find_compose_file() {
     return 1
 }
 
+build_local_image() {
+    DOCKER_DIR="$(find_docker_dir)" || fail "Dockerfile not found"
+    log "building image ${IMAGE_TAG} from ${DOCKER_DIR}"
+    docker build -t "${IMAGE_TAG}" "${DOCKER_DIR}" || fail "本地构建 ${IMAGE_TAG} 失败（通常是没有外网访问 DockerHub / Alpine 源，建议在飞牛 Docker 里配置镜像加速后重试）"
+}
+
 prepare_app_image() {
     if ! command -v docker >/dev/null 2>&1; then
         fail "docker command not found"
@@ -241,35 +281,43 @@ prepare_app_image() {
         return 0
     fi
 
-    log "pulling prebuilt image ${PREBUILT_IMAGE}"
-    if docker pull "${PREBUILT_IMAGE}" && docker tag "${PREBUILT_IMAGE}" "${IMAGE_TAG}"; then
-        log "prepared ${IMAGE_TAG} from ${PREBUILT_IMAGE}"
-        return 0
+    if [ -n "${PREBUILT_IMAGE}" ] && [ "${PREBUILT_IMAGE}" != "__SUB2API_FNOS_IMAGE__" ]; then
+        for candidate in ${PREBUILT_IMAGE}; do
+            log "pulling prebuilt image ${candidate}"
+            if docker pull "${candidate}" && docker tag "${candidate}" "${IMAGE_TAG}"; then
+                log "prepared ${IMAGE_TAG} from ${candidate}"
+                return 0
+            fi
+            log "拉取 ${candidate} 失败，尝试下一个候选镜像"
+        done
+        log "所有预构建镜像都拉取失败，回退到本地构建"
     fi
 
-    fail "prebuilt image pull failed: ${PREBUILT_IMAGE}"
+    build_local_image
 }
 
 start_app() {
     if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-        fail "docker is not available"
+        fail "docker 不可用：请先在飞牛「Docker」中启用并确认 docker info 能正常返回"
     fi
-    COMPOSE_FILE="$(find_compose_file)" || fail "docker-compose.yaml not found"
-    docker compose -p "${APP_NAME}" -f "${COMPOSE_FILE}" up -d --remove-orphans || fail "failed to start ${APP_NAME}"
+    COMPOSE_FILE="$(find_compose_file)" || fail "找不到 docker-compose.yaml"
+    compose_cmd up -d --remove-orphans || fail "启动 ${APP_NAME} 失败（compose 命令或镜像有问题）"
 }
 
+log "应用数据目录: ${DATA_ROOT}"
 mkdir -p \
     "${DATA_ROOT}/data" \
     "${DATA_ROOT}/data/postgresql" \
     "${DATA_ROOT}/data/postgresql-run" \
     "${DATA_ROOT}/data/redis" \
-    "${DATA_ROOT}/data/logs"
+    "${DATA_ROOT}/data/logs" || fail "无法创建数据目录 ${DATA_ROOT}（安装盘可能不可写）"
 chmod 700 \
     "${DATA_ROOT}" \
     "${DATA_ROOT}/data" \
     "${DATA_ROOT}/data/postgresql" \
     "${DATA_ROOT}/data/postgresql-run" \
     "${DATA_ROOT}/data/redis" 2>/dev/null || true
+touch "${DATA_ROOT}/.write-test" 2>/dev/null && rm -f "${DATA_ROOT}/.write-test" || fail "数据目录 ${DATA_ROOT} 不可写"
 
 ensure_app_target_link
 
@@ -340,4 +388,6 @@ prepare_app_image
 log "prepared embedded PostgreSQL, Redis and application data in ${DATA_ROOT}"
 start_app
 log "started ${APP_NAME}"
+log "安装完成。日志: ${INSTALL_LOG:-<不可写>}"
+cp -f "${INSTALL_LOG}" "${DATA_ROOT}/install.log" 2>/dev/null || true
 exit 0

@@ -2,11 +2,12 @@
 
 FROM redis:8-alpine AS redis
 
-FROM weishaw/sub2api:0.1.152
+FROM weishaw/sub2api:0.2.8
 
 USER root
 
-RUN apk add --no-cache postgresql16 postgresql16-client postgresql16-contrib su-exec
+RUN sed -i 's#https\?://dl-cdn.alpinelinux.org#https://mirrors.tuna.tsinghua.edu.cn#g' /etc/apk/repositories && \
+    apk add --no-cache postgresql16 postgresql16-client postgresql16-contrib su-exec
 
 COPY --from=redis /usr/local/bin/redis-server /usr/local/bin/redis-server
 COPY --from=redis /usr/local/bin/redis-cli /usr/local/bin/redis-cli

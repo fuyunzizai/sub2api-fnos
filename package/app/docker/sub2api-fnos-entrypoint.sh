@@ -232,6 +232,8 @@ jwt:
     secret: ${JWT_SECRET}
     expire_hour: ${JWT_EXPIRE_HOUR:-24}
 default:
+    admin_email: ${ADMIN_EMAIL:-}
+    admin_password: ${ADMIN_PASSWORD:-}
     user_concurrency: ${DEFAULT_USER_CONCURRENCY:-5}
     user_balance: ${DEFAULT_USER_BALANCE:-0}
     api_key_prefix: ${DEFAULT_API_KEY_PREFIX:-sk-}
@@ -239,7 +241,6 @@ default:
 rate_limit:
     requests_per_minute: ${RATE_LIMIT_REQUESTS_PER_MINUTE:-60}
     burst_size: ${RATE_LIMIT_BURST_SIZE:-10}
-timezone: ${TZ:-Asia/Shanghai}
 EOF_CONFIG
     if [ "$(id -u)" = "0" ]; then
         chown "${APP_USER}:${APP_USER}" "${DATA_DIR}/config.yaml" 2>/dev/null || true

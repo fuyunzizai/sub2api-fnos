@@ -1,0 +1,6 @@
+# 飞牛包里的脚本要在 Linux 上运行，检出时必须保持 LF。
+* text=auto eol=lf
+
+*.png binary
+*.fpk binary
+*.tgz binary
